@@ -3,6 +3,9 @@ title DropShip Pro v4.0
 color 0A
 cls
 
+:: ── Get root directory (one level up from this script) ────────
+set ROOT=%~dp0..
+
 echo.
 echo   ========================================
 echo     DropShip Pro v4.0 - eBay API Edition
@@ -33,9 +36,9 @@ if errorlevel 1 (
 )
 
 :: ── Check .env file exists ────────────────────────────────────
-if not exist "backend\.env" (
+if not exist "%ROOT%\backend\.env" (
     echo   [SETUP] Creating .env from template...
-    copy "backend\.env.example" "backend\.env" >nul
+    copy "%ROOT%\backend\.env.example" "%ROOT%\backend\.env" >nul
     echo.
     echo   ============================================
     echo    FIRST TIME SETUP - Action Required
@@ -52,7 +55,7 @@ if not exist "backend\.env" (
     echo.
     echo   After editing .env, run this file again.
     echo.
-    start notepad "backend\.env"
+    start notepad "%ROOT%\backend\.env"
     pause
     exit /b 0
 )
@@ -68,7 +71,7 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3000" 2^>nul') do (
 
 :: ── Install Python deps ────────────────────────────────────────
 echo   Installing Python packages (first run may take a minute)...
-cd backend
+cd /d "%ROOT%\backend"
 pip install -q -r requirements.txt
 if errorlevel 1 (
     echo   [ERROR] Failed to install Python packages.
@@ -78,12 +81,11 @@ if errorlevel 1 (
 
 :: ── Start backend ─────────────────────────────────────────────
 echo   Starting backend API on port 8000...
-start /B "" uvicorn main:app --host 0.0.0.0 --port 8000 --reload > ..\backend.log 2>&1
-cd ..
+start /B "" uvicorn main:app --host 0.0.0.0 --port 8000 --reload > "%ROOT%\backend.log" 2>&1
 
 :: ── Install frontend deps ──────────────────────────────────────
 echo   Installing frontend packages (first run may take a minute)...
-cd frontend
+cd /d "%ROOT%\frontend"
 call npm install --silent
 if errorlevel 1 (
     echo   [ERROR] Failed to install frontend packages.
@@ -93,26 +95,25 @@ if errorlevel 1 (
 
 :: ── Start frontend ────────────────────────────────────────────
 echo   Starting frontend on port 3000...
-start /B "" npm run dev > ..\frontend.log 2>&1
-cd ..
+start /B "" npm run dev > "%ROOT%\frontend.log" 2>&1
 
-:: ── Wait for backend to be ready ─────────────────────────────
+:: ── Wait for app to be ready ──────────────────────────────────
 echo   Waiting for app to start...
 timeout /t 4 /nobreak >nul
 
-:: ── Open browser ─────────────────────────────────────────────
+:: ── Open browser ──────────────────────────────────────────────
 echo.
 echo   ========================================
 echo     App is running!
 echo     Opening http://localhost:3000 ...
 echo   ========================================
 echo.
-echo   Logs: backend.log / frontend.log
-echo   To stop: close this window or run stop.bat
+echo   Logs: backend.log / frontend.log  (in app root folder)
+echo   To stop: run stop.bat or close this window
 echo.
 start http://localhost:3000
 
-:: ── Keep window open ─────────────────────────────────────────
+:: ── Keep window open ──────────────────────────────────────────
 echo   Press Ctrl+C or close this window to stop the app.
 echo.
 :loop
