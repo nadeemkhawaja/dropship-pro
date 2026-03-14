@@ -5,9 +5,7 @@ from dotenv import load_dotenv
 # Load .env from the backend directory (one level up from services/)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# On Railway: set DB_PATH=/data/dropship.db and mount a volume at /data
-# Locally: defaults to dropship.db in the backend folder
-DB = Path(os.environ.get("DB_PATH", "dropship.db"))
+DB = Path("dropship.db")
 
 def get_db():
     c = sqlite3.connect(DB)
