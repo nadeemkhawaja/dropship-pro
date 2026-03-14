@@ -708,6 +708,21 @@ async def import_opportunity(data: dict):
     return {"success": True, "product_id": pid}
 
 
+# ── Serve built React frontend (production) ───────────────────
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses   import FileResponse
+
+_static = Path(__file__).parent / "static"
+if _static.exists():
+    # Serve /assets/* (JS/CSS chunks)
+    app.mount("/assets", StaticFiles(directory=str(_static / "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Catch-all: serve index.html for any non-API route (React router)."""
+        return FileResponse(str(_static / "index.html"))
+
+
 # ── Legacy blocking scan (kept for compatibility) ──────────────
 
 @app.post("/api/scan/run")
