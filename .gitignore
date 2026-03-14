@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Database — contains your eBay API keys!
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+
+# Logs
+*.log
+/tmp/
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Environment files — NEVER commit these, they contain API keys
+.env
+backend/.env
+# Allow the example file (safe to publish — no real keys)
+!.env.example
+!backend/.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
