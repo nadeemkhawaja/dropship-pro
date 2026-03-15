@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { PageHeader, Spinner } from "../components/shared";
 import { api } from "../services/api";
+import * as XLSX from "xlsx";
 
 const CATS = [
   { id: "electronics",   icon: "📱", label: "Electronics & Gadgets" },
@@ -143,6 +144,108 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
     setImporting(p => ({ ...p, [key]: false }));
   };
 
+  // ── Download XLSX ─────────────────────────────────────────────
+  const downloadXLSX = () => {
+    const mode = scanState.mode;
+    const rows = sortedResults;
+    const date = new Date().toISOString().slice(0, 10);
+    const wb   = XLSX.utils.book_new();
+
+    // Helper: convert URL columns into HYPERLINK() formulas (works in Excel + Google Sheets)
+    // urlColNames = { "Header Name": "Display Label" }
+    const applyHyperlinks = (ws, urlColNames) => {
+      const range = XLSX.utils.decode_range(ws["!ref"]);
+      // Map header name → column index
+      const colIndex = {};
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const hdr = ws[XLSX.utils.encode_cell({ r: 0, c: C })];
+        if (hdr && urlColNames[hdr.v] !== undefined) colIndex[C] = urlColNames[hdr.v];
+      }
+      // Write HYPERLINK formula into each data row cell
+      for (let R = 1; R <= range.e.r; R++) {
+        for (const [C, label] of Object.entries(colIndex)) {
+          const addr = XLSX.utils.encode_cell({ r: R, c: +C });
+          const cell = ws[addr];
+          if (cell && cell.v && typeof cell.v === "string" && cell.v.startsWith("http")) {
+            const safeUrl = cell.v.replace(/"/g, '""'); // escape any quotes in URL
+            cell.f = `HYPERLINK("${safeUrl}","${label}")`;
+            cell.v = label;
+            cell.t = "s";
+          }
+        }
+      }
+    };
+
+    if (mode === "scout") {
+      const data = rows.map((r, i) => ({
+        "#":                i + 1,
+        "Product Title":    r.ebay_title || "",
+        "eBay Avg Sold $":  r.ebay_avg_sold   != null ? +r.ebay_avg_sold.toFixed(2)   : "",
+        "Your Sell Price $":r.ebay_sell_price  != null ? +r.ebay_sell_price.toFixed(2)  : "",
+        "Price Min $":      r.price_min        != null ? +r.price_min.toFixed(2)        : "",
+        "Price Max $":      r.price_max        != null ? +r.price_max.toFixed(2)        : "",
+        "Est Profit Low $": r.est_profit_low   != null ? +r.est_profit_low.toFixed(2)   : "",
+        "Est Profit High $":r.est_profit_high  != null ? +r.est_profit_high.toFixed(2)  : "",
+        "Est ROI Low %":    r.est_roi_low  || 0,
+        "Est ROI High %":   r.est_roi_high || 0,
+        "Opp Score":        r.opp_score    || 0,
+        "Demand":           r.demand       || "",
+        "Competition":      r.competition  || "",
+        "Total Sold":       r.total_sold   || 0,
+        "Active Listings":  r.active_listings || 0,
+        "Unique Sellers":   r.unique_sellers  || 0,
+        "% New Items":      r.new_pct || 0,
+        "eBay Sold Search": r.ebay_search_url   || "",
+        "eBay Listing":     r.ebay_item_url     || "",
+        "Amazon Search":    r.amazon_search_url || "",
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws["!cols"] = [
+        {wch:4},{wch:55},{wch:16},{wch:16},{wch:12},{wch:12},
+        {wch:16},{wch:16},{wch:14},{wch:14},{wch:10},
+        {wch:10},{wch:12},{wch:12},{wch:15},{wch:15},{wch:12},
+        {wch:16},{wch:14},{wch:16},
+      ];
+      applyHyperlinks(ws, {
+        "eBay Sold Search": "eBay Sold ↗",
+        "eBay Listing":     "Listing ↗",
+        "Amazon Search":    "Amazon ↗",
+      });
+      XLSX.utils.book_append_sheet(wb, ws, "eBay Scout");
+
+    } else {
+      const data = rows.map((r, i) => ({
+        "#":                i + 1,
+        "eBay Title":       r.ebay_title    || "",
+        "Amazon Title":     r.amazon_title  || "",
+        "Match Score %":    r.match_score   || 0,
+        "Amazon Cost $":    r.amazon_cost   != null ? +r.amazon_cost.toFixed(2)  : "",
+        "eBay Sell Price $":r.ebay_sell_price != null ? +r.ebay_sell_price.toFixed(2) : "",
+        "eBay Fees $":      r.fees          != null ? +r.fees.toFixed(2)         : "",
+        "Net Profit $":     r.net_profit    != null ? +r.net_profit.toFixed(2)   : "",
+        "ROI %":            r.roi_pct       || 0,
+        "Amazon ASIN":      r.amazon_asin   || "",
+        "Amazon URL":       r.amazon_url    || "",
+        "eBay Sold Search": r.ebay_search_url || "",
+        "Amazon Rating":    r.amazon_rating || "",
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws["!cols"] = [
+        {wch:4},{wch:55},{wch:55},{wch:13},
+        {wch:14},{wch:16},{wch:12},{wch:13},{wch:8},
+        {wch:14},{wch:16},{wch:16},{wch:13},
+      ];
+      applyHyperlinks(ws, {
+        "Amazon URL":       "Amazon ↗",
+        "eBay Sold Search": "eBay Sold ↗",
+      });
+      XLSX.utils.book_append_sheet(wb, ws, "Full Profit Scan");
+    }
+
+    XLSX.writeFile(wb, `dropship-${mode}-scan-${date}.xlsx`);
+    showToast(`✓ Downloaded ${rows.length} results as Excel file`);
+  };
+
   // ── Sort results ─────────────────────────────────────────────
   const sortedResults = [...results].sort((a, b) => {
     if (sortBy === "opp_score")  return (b.opp_score  || 0) - (a.opp_score  || 0);
@@ -232,7 +335,7 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
           <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 14,
             padding: "8px 12px", background: "#f8fafc", borderRadius: 7, border: "1px solid #e2e8f0" }}>
             {mode === "scout"
-              ? `⚡ Scout scans ${selectedCats.length * 8} keyword sets — runs eBay sold + active searches concurrently. Each result shows real demand, competition and estimated profit range. Use "Check Amazon $" on interesting rows.`
+              ? `⚡ Scout scans ${selectedCats.length * 40} keyword sets — runs eBay sold + active searches concurrently. Each result shows real demand, competition and estimated profit range. Use "Check Amazon $" on interesting rows.`
               : `🔍 Full Scan checks eBay listings against Amazon. Works best with Rainforest API. For now, try 1–2 categories only.`
             }
           </div>
@@ -240,7 +343,7 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
           <button className="btn btn-primary" onClick={startScan} disabled={!selectedCats.length}
             style={{ width: "100%", padding: "11px", fontSize: 14, fontWeight: 700 }}>
             {mode === "scout"
-              ? `⚡ Start eBay Scout — ${selectedCats.length} categories · ${selectedCats.length * 8} keyword sets`
+              ? `⚡ Start eBay Scout — ${selectedCats.length} categories · ${selectedCats.length * 40} keyword sets`
               : `🔍 Start Full Profit Scan — ${selectedCats.length} categories`}
           </button>
         </div>
@@ -284,6 +387,12 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
             {isRunning && <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 400 }}> · live</span>}
           </div>
           <div style={{ flex: 1 }}/>
+          {!isRunning && results.length > 0 && (
+            <button className="btn btn-ghost btn-sm" onClick={downloadXLSX}
+              style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+              ⬇ Download Excel
+            </button>
+          )}
           <select className="input" style={{ width: 160, fontSize: 12 }}
             value={sortBy} onChange={e => setSortBy(e.target.value)}>
             {scanState.mode === "scout" && <>
