@@ -82,7 +82,11 @@ app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path in _PUBLIC or request.method == "OPTIONS":
+    path = request.url.path
+    if path in _PUBLIC or request.method == "OPTIONS":
+        return await call_next(request)
+    # Let static files through (Docker SPA serving)
+    if not path.startswith("/api/"):
         return await call_next(request)
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
