@@ -74,11 +74,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="DropShip Pro", version="4.2 — eBay API", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-_CORS_ORIGINS = os.environ.get(
-    "CORS_ORIGINS", "http://localhost:3000,http://localhost:8000"
-).split(",")
+_raw_cors = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000")
+_CORS_ORIGINS = ["*"] if _raw_cors.strip() == "*" else _raw_cors.split(",")
 app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"],
-                   allow_headers=["*"], allow_credentials=True)
+                   allow_headers=["*"], allow_credentials=(_CORS_ORIGINS != ["*"]))
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
