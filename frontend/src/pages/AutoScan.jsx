@@ -255,6 +255,8 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
     if (sortBy === "roi")        return (b.roi_pct    || 0) - (a.roi_pct    || 0);
     if (sortBy === "match")      return (b.match_score || 0) - (a.match_score || 0);
     if (sortBy === "comp_low")   return (a.active_listings || 9999) - (b.active_listings || 9999);
+    if (sortBy === "price_low")  return (a.price || 0) - (b.price || 0);
+    if (sortBy === "watchers")   return (b.watchers || 0) - (a.watchers || 0);
     return 0;
   });
 
@@ -280,9 +282,11 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
           {/* Mode tabs */}
           <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
             {[
-              { id: "scout", icon: "⚡", label: "eBay Scout",
+              { id: "scout",      icon: "⚡", label: "eBay Scout",
                 sub: "Fast · eBay market data only · Check Amazon per row" },
-              { id: "full",  icon: "🔍", label: "Full Profit Scan",
+              { id: "topsellers", icon: "🏆", label: "Top Sellers",
+                sub: "Top 10 sellers per category · their top 20 products · $5–$50 BIN only" },
+              { id: "full",       icon: "🔍", label: "Full Profit Scan",
                 sub: "eBay + Amazon · Needs Rainforest API for best results" },
             ].map(m => (
               <button key={m.id} onClick={() => setMode(m.id)} style={{
@@ -336,6 +340,8 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
             padding: "8px 12px", background: "#f8fafc", borderRadius: 7, border: "1px solid #e2e8f0" }}>
             {mode === "scout"
               ? `⚡ Scout scans ${selectedCats.length * 40} keyword sets — runs eBay sold + active searches concurrently. Each result shows real demand, competition and estimated profit range. Use "Check Amazon $" on interesting rows.`
+              : mode === "topsellers"
+              ? `🏆 Finds the top 10 sellers in each selected category, then pulls their top 20 active BIN listings priced $5–$50. Branded, liquid, food and hazardous products are automatically filtered out.`
               : `🔍 Full Scan checks eBay listings against Amazon. Works best with Rainforest API. For now, try 1–2 categories only.`
             }
           </div>
@@ -344,6 +350,8 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
             style={{ width: "100%", padding: "11px", fontSize: 14, fontWeight: 700 }}>
             {mode === "scout"
               ? `⚡ Start eBay Scout — ${selectedCats.length} categories · ${selectedCats.length * 40} keyword sets`
+              : mode === "topsellers"
+              ? `🏆 Find Top Sellers — ${selectedCats.length} categories · up to ${selectedCats.length * 200} products`
               : `🔍 Start Full Profit Scan — ${selectedCats.length} categories`}
           </button>
         </div>
@@ -401,6 +409,11 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
               <option value="comp_low">Least Competition</option>
               <option value="profit_est">Est. Profit (high)</option>
               <option value="price">Highest Price</option>
+            </>}
+            {scanState.mode === "topsellers" && <>
+              <option value="price">Highest Price</option>
+              <option value="price_low">Lowest Price</option>
+              <option value="watchers">Most Watched</option>
             </>}
             {scanState.mode === "full" && <>
               <option value="roi">Highest ROI</option>
@@ -602,6 +615,15 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
         </div>
       )}
 
+      {/* ── TOP SELLERS CARDS ── */}
+      {results.length > 0 && scanState.mode === "topsellers" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {sortedResults.map((item, i) => (
+            <TopSellerCard key={i} item={item} />
+          ))}
+        </div>
+      )}
+
       {/* ── FULL SCAN CARDS ── */}
       {results.length > 0 && scanState.mode === "full" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -614,13 +636,17 @@ export default function AutoScan({ showToast, scanState, setScanState }) {
       {/* ── Empty state ── */}
       {!isRunning && results.length === 0 && (
         <div className="card" style={{ padding: "60px 40px", textAlign: "center" }}>
-          <div style={{ fontSize: 40, marginBottom: 14 }}>{mode === "scout" ? "⚡" : "🔍"}</div>
-          <div style={{ fontSize: 16, fontWeight: 600, color: "#334155", marginBottom: 8 }}>
-            {mode === "scout" ? "eBay Scout" : "Full Profit Scan"} ready
+          <div style={{ fontSize: 40, marginBottom: 14 }}>
+            {mode === "scout" ? "⚡" : mode === "topsellers" ? "🏆" : "🔍"}
           </div>
-          <div style={{ fontSize: 13, color: "#94a3b8", maxWidth: 420, margin: "0 auto" }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: "#334155", marginBottom: 8 }}>
+            {mode === "scout" ? "eBay Scout" : mode === "topsellers" ? "Top Sellers" : "Full Profit Scan"} ready
+          </div>
+          <div style={{ fontSize: 13, color: "#94a3b8", maxWidth: 440, margin: "0 auto" }}>
             {mode === "scout"
               ? "Scout scans eBay sold + active listings simultaneously. Each result shows real demand data, competition level, seller count and an estimated profit range — all from eBay's API, no Amazon needed."
+              : mode === "topsellers"
+              ? "Finds the top 10 sellers in each selected category by analyzing recent sold listings, then pulls their top 20 active Buy It Now products priced $5–$50. Branded, liquid, food and hazardous items are automatically filtered out."
               : "Full Scan cross-references eBay listings with Amazon pricing. Works best with Rainforest API. Try 1–2 categories only with the current scraper."}
           </div>
         </div>
@@ -736,6 +762,116 @@ function FullScanCard({ opp, importing, onImport }) {
     </div>
   );
 }
+
+// ── Top Seller product card ───────────────────────────────────
+
+function TopSellerCard({ item }) {
+  const price    = item.price?.toFixed(2);
+  const seller   = item.seller || "unknown";
+  const sellerUrl = `https://www.ebay.com/sch/${encodeURIComponent(seller)}/m.html?_sacat=0`;
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 10,
+      border: "1px solid #e2e8f0", padding: "14px 18px",
+      display: "flex", gap: 14, alignItems: "flex-start" }}>
+
+      {/* Image */}
+      {item.image
+        ? <img src={item.image} alt="" style={{ width: 64, height: 64,
+            objectFit: "cover", borderRadius: 8,
+            border: "1px solid #e2e8f0", flexShrink: 0 }}/>
+        : <div style={{ width: 64, height: 64, borderRadius: 8,
+            background: "#f1f5f9", flexShrink: 0,
+            display: "flex", alignItems: "center",
+            justifyContent: "center", fontSize: 24 }}>📦</div>
+      }
+
+      {/* Content */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+
+        {/* Title + links */}
+        <div style={{ display: "flex", alignItems: "flex-start",
+          gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#1e293b",
+            flex: 1, minWidth: 200, lineHeight: 1.35 }}>
+            {item.title}
+          </span>
+          <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+            {item.item_url && (
+              <a href={item.item_url} target="_blank" rel="noreferrer"
+                style={linkStyle("#f0fdf4","#166534","#86efac")}>eBay ↗</a>
+            )}
+            <a href={item.amazon_search_url} target="_blank" rel="noreferrer"
+              style={linkStyle("#fffbeb","#92400e","#fde68a")}>Amazon ↗</a>
+          </div>
+        </div>
+
+        {/* Metrics row */}
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+
+          {/* Price */}
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 1 }}>BIN PRICE</div>
+            <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: "#16a34a" }}>
+              ${price}
+            </div>
+          </div>
+
+          <div style={{ width: 1, height: 30, background: "#e2e8f0" }}/>
+
+          {/* Seller */}
+          <div>
+            <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 2 }}>SELLER</div>
+            <a href={sellerUrl} target="_blank" rel="noreferrer"
+              style={{ fontSize: 11, fontWeight: 600, color: "#1d4ed8",
+                textDecoration: "none" }}>
+              {seller} ↗
+            </a>
+            <div style={{ fontSize: 8, color: "#94a3b8" }}>
+              {item.seller_appearances} recent sales
+            </div>
+          </div>
+
+          <div style={{ width: 1, height: 30, background: "#e2e8f0" }}/>
+
+          {/* Category */}
+          <div>
+            <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 2 }}>CATEGORY</div>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#475569" }}>
+              {item.category_icon} {item.category_label}
+            </span>
+          </div>
+
+          {/* Watchers */}
+          {(item.watchers > 0) && (
+            <>
+              <div style={{ width: 1, height: 30, background: "#e2e8f0" }}/>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 9, color: "#94a3b8", marginBottom: 1 }}>WATCHERS</div>
+                <div className="mono" style={{ fontSize: 13, fontWeight: 700,
+                  color: item.watchers >= 10 ? "#dc2626" : "#d97706" }}>
+                  {item.watchers}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Condition */}
+          {item.condition && (
+            <div style={{ marginLeft: "auto" }}>
+              <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5,
+                background: "#f1f5f9", color: "#64748b",
+                border: "1px solid #e2e8f0", fontWeight: 500 }}>
+                {item.condition}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ── Shared metric block ───────────────────────────────────────
 

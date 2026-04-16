@@ -50,6 +50,24 @@ PROHIBITED_KEYWORDS = {
     "replica","counterfeit","fake","knockoff","unauthorized",
 }
 
+# ── eBay numeric category IDs (needed for Browse API seller search) ────────
+EBAY_CAT_IDS = {
+    "electronics":   "58058",   # Consumer Electronics
+    "apparel":       "11450",   # Clothing, Shoes & Accessories
+    "auto":          "6028",    # Auto Parts & Accessories
+    "jewelry":       "281",     # Jewelry & Watches
+    "collectibles":  "1",       # Collectibles
+    "health_beauty": "26395",   # Health & Beauty
+    "home_garden":   "11700",   # Home & Garden
+    "kitchen":       "20625",   # Kitchen, Dining & Bar
+    "pets":          "1281",    # Pet Supplies
+    "office":        "316",     # Office Products & Supplies
+    "sports":        "888",     # Sporting Goods
+    "toys":          "220",     # Toys & Hobbies
+    "baby":          "2984",    # Baby
+    "outdoor":       "20710",   # Camping & Hiking / Outdoor Recreation
+}
+
 # ── 14 product categories with keywords ───────────────────────
 CATEGORIES = {
     "electronics": {
@@ -709,7 +727,25 @@ CATEGORIES = {
     },
 }
 
-# Legacy flat list — kept for backward compatibility
+# ── Liquid / Food / Hazard blocklist ──────────────────────────
+LIQUID_FOOD_HAZARD = {
+    # Liquids & topicals
+    "lotion","serum","toner","essence","mist","cologne","perfume",
+    "fragrance","shampoo","conditioner","body wash","face wash",
+    "cleanser","moisturizer","sunscreen","lip gloss","lip balm",
+    "nail polish","hair dye","hair color","bleach","solution","fluid",
+    "liquid soap","hand soap","dish soap","wax melt","candle wax",
+    # Food / edible
+    "food","snack","candy","chocolate","coffee","tea","gummy",
+    "vitamin","supplement","protein powder","nuts","dried fruit",
+    "sauce","seasoning","spice","cooking oil","butter","juice",
+    "drink","beverage","edible","flavoring","sweetener",
+    # Hazards
+    "pesticide","herbicide","insecticide","flammable","corrosive",
+    "battery acid","drain cleaner","rodenticide",
+}
+
+# ── Legacy flat list — kept for backward compatibility
 SCAN_CATEGORIES = [kw for cat in CATEGORIES.values() for kw in cat["keywords"]]
 
 # ── Stop words ─────────────────────────────────────────────────
@@ -748,6 +784,11 @@ def is_branded(title: str) -> bool:
 def is_prohibited(title: str) -> bool:
     title_lower = title.lower()
     return any(kw in title_lower for kw in PROHIBITED_KEYWORDS)
+
+
+def is_liquid_food_hazard(title: str) -> bool:
+    t = title.lower()
+    return any(kw in t for kw in LIQUID_FOOD_HAZARD)
 
 
 def is_refurbished(title: str) -> bool:
@@ -875,6 +916,71 @@ async def find_amazon_match(ebay_title: str, max_cost: float) -> Optional[dict]:
     except Exception as e:
         log.error(f"Amazon match error for '{ebay_title[:40]}': {e}")
         return None
+
+
+# ── Top Sellers discovery ──────────────────────────────────────
+
+async def top_sellers_scan(
+    ebay_client: eBayClient,
+    category_id: str,
+    max_products: int = 200,
+) -> list:
+    """
+    Find top-selling BIN products ($5–$50) in a category.
+
+    Method (same as AutoDS):
+      - Search eBay category with sort=bestMatch — eBay ranks by purchase
+        activity so top results = highest-demand products
+      - Extract seller usernames from results to identify top sellers
+      - Filter out branded, prohibited, food/liquid/hazard items
+      - Return products grouped/sorted by seller frequency (top sellers first)
+    """
+    ebay_cat_id = EBAY_CAT_IDS.get(category_id)
+    if not ebay_cat_id:
+        log.warning(f"top_sellers_scan: unknown category {category_id}")
+        return []
+
+    result = await ebay_client.search_category_best(ebay_cat_id, limit=200)
+    items  = result.get("items", [])
+    log.info(f"top_sellers_scan [{category_id}]: {len(items)} raw results from eBay")
+
+    # ── Filter ────────────────────────────────────────────────────
+    clean   = []
+    seen    = set()
+    seller_counts: dict = {}
+
+    for item in items:
+        price = item.get("price")
+        if price is None or not (5.0 <= float(price) <= 50.0):
+            continue
+        title = item.get("title", "")
+        if not title:
+            continue
+        if (is_branded(title) or is_prohibited(title)
+                or is_refurbished(title) or is_liquid_food_hazard(title)):
+            continue
+        # Soft dedup — skip near-identical titles
+        key = title.lower()[:45]
+        if key in seen:
+            continue
+        seen.add(key)
+
+        seller = item.get("seller") or "unknown"
+        seller_counts[seller] = seller_counts.get(seller, 0) + 1
+        clean.append(item)
+
+    log.info(f"top_sellers_scan [{category_id}]: {len(clean)} products after filter, "
+             f"{len(seller_counts)} unique sellers")
+
+    # ── Attach seller rank & sort ─────────────────────────────────
+    for p in clean:
+        p["seller_product_count"] = seller_counts.get(p.get("seller") or "unknown", 0)
+
+    # Sort: sellers with most products in top-200 appear first (they are the top sellers)
+    # Within same seller, preserve bestMatch order (original list order)
+    clean.sort(key=lambda x: x["seller_product_count"], reverse=True)
+
+    return clean[:max_products]
 
 
 # ── eBay Scout (fast, eBay-only) ───────────────────────────────

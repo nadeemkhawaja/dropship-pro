@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - db-data:/app/data
+    env_file:
+      - backend/.env
+    environment:
+      - DB_PATH=/app/data/dropship.db
+      - CORS_ORIGINS=http://localhost:8000
+    restart: unless-stopped
+
+volumes:
+  db-data:

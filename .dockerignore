@@ -1,0 +1,14 @@
+node_modules/
+__pycache__/
+.git/
+*.db
+*.db-shm
+*.db-wal
+backend/.env
+.DS_Store
+frontend/dist/
+.venv/
+venv/
+*.log
+.fuse_hidden*
+.claude/

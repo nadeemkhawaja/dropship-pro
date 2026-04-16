@@ -1,25 +1,35 @@
 const getToken = () => localStorage.getItem("ds_token") || "";
 
 const call = async (path, opts = {}) => {
-  const r = await fetch("/api" + path, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(getToken() ? { "Authorization": `Bearer ${getToken()}` } : {}),
-    },
-    ...opts,
-  });
-  if (r.status === 401) {
-    // Token expired or invalid — force re-login
-    localStorage.removeItem("ds_token");
-    localStorage.removeItem("ds_user");
-    window.location.reload();
-    throw new Error("Session expired");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const r = await fetch("/api" + path, {
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(getToken() ? { "Authorization": `Bearer ${getToken()}` } : {}),
+      },
+      ...opts,
+    });
+    if (r.status === 401) {
+      localStorage.removeItem("ds_token");
+      localStorage.removeItem("ds_user");
+      window.location.reload();
+      throw new Error("Session expired");
+    }
+    if (r.status === 429) throw new Error("Too many requests — please wait a moment");
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({ detail: r.statusText }));
+      throw new Error(e.detail || r.statusText);
+    }
+    return r.json();
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("Request timed out — server may be busy");
+    throw e;
+  } finally {
+    clearTimeout(timeout);
   }
-  if (!r.ok) {
-    const e = await r.json().catch(() => ({ detail: r.statusText }));
-    throw new Error(e.detail || r.statusText);
-  }
-  return r.json();
 };
 
 export const api = {

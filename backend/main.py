@@ -1,20 +1,27 @@
 """DropShip Pro — eBay Developer API Edition"""
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 from contextlib import asynccontextmanager
-import json, asyncio, uuid, logging, os, hmac, hashlib, base64, time
+import json, asyncio, uuid, logging, os, hmac, hashlib, base64, time, urllib.parse
 from dotenv import load_dotenv
 from pathlib import Path
 
 load_dotenv(Path(__file__).parent / ".env")
 
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 from services.database      import get_db, get_setting, set_setting, log_activity, init_db
 from services.ebay_api      import eBayClient
 from services.amazon_scraper import fetch_product as amz_fetch, search as amz_search
 from services.walmart_scraper import fetch_product as wmt_fetch, search as wmt_search
+
+limiter = Limiter(key_func=get_remote_address)
 
 log = logging.getLogger("DropShip")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -64,8 +71,13 @@ async def lifespan(app: FastAPI):
     init_db()
     yield
 
-app = FastAPI(title="DropShip Pro", version="4.0 — eBay API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
+app = FastAPI(title="DropShip Pro", version="4.2 — eBay API", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+_CORS_ORIGINS = os.environ.get(
+    "CORS_ORIGINS", "http://localhost:3000,http://localhost:8000"
+).split(",")
+app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"],
                    allow_headers=["*"], allow_credentials=True)
 
 @app.middleware("http")
@@ -88,7 +100,8 @@ class LoginReq(BaseModel):
     password: str
 
 @app.post("/api/auth/login")
-def login(data: LoginReq):
+@limiter.limit("5/minute")
+def login(request: Request, data: LoginReq):
     if data.username != _APP_USER or data.password != _APP_PASS:
         raise HTTPException(401, "Invalid username or password")
     token = _make_token(data.username)
@@ -497,6 +510,7 @@ from services.auto_scanner import (
     run_auto_scan, CATEGORIES, SCAN_CATEGORIES,
     scout_keyword, scan_category, find_amazon_match,
     calc_profit, match_label,
+    top_sellers_scan,
 )
 
 # In-memory scan state (survives for lifetime of process)
@@ -559,10 +573,51 @@ async def _bg_full(scan_id: str, keywords_list: list):
                  f"Found {state['total_found']} opportunities")
 
 
+async def _bg_topsellers(scan_id: str, category_ids: list):
+    """
+    Background task — finds top BIN products per category using eBay bestMatch sort.
+    bestMatch is eBay's purchase-activity-weighted ranking = proxy for top sellers.
+    """
+    state = active_scans[scan_id]
+    ebay  = get_ebay()
+
+    for cat_id in category_ids:
+        if state.get("cancelled"):
+            break
+        cat       = CATEGORIES.get(cat_id, {})
+        cat_label = cat.get("label", cat_id)
+        cat_icon  = cat.get("icon", "📦")
+
+        try:
+            products = await top_sellers_scan(ebay, cat_id, max_products=200)
+
+            for p in products:
+                if state.get("cancelled"):
+                    break
+                title = p.get("title", "")
+                q = urllib.parse.quote(title[:80])
+                p["category_id"]    = cat_id
+                p["category_label"] = cat_label
+                p["category_icon"]  = cat_icon
+                p["amazon_search_url"] = f"https://www.amazon.com/s?k={q}"
+                state["results"].append(p)
+                state["total_found"] += 1
+
+        except Exception as e:
+            log.error(f"Top sellers scan ({cat_id}): {e}")
+
+        state["progress"] += 1
+
+    state["done"]   = True
+    state["status"] = "done"
+    log_activity("scan", "Top Sellers scan complete",
+                 f"Found {state['total_found']} products across {len(category_ids)} categories")
+
+
 # ── Scan endpoints ─────────────────────────────────────────────
 
 class ScanStartReq(BaseModel):
-    mode: str               # "scout" or "full"
+    mode: str               # "scout", "full", or "topsellers"
     category_ids: List[str]
 
 @app.get("/api/scan/categories")
@@ -577,7 +632,25 @@ async def start_scan(data: ScanStartReq):
     if not data.category_ids:
         raise HTTPException(400, "Select at least one category")
 
-    # Build keyword list from selected categories
+    ebay = get_ebay()
+    if not ebay.is_configured():
+        raise HTTPException(400, "eBay API not configured — add keys in Settings")
+
+    # Top Sellers mode — no keyword list needed
+    if data.mode == "topsellers":
+        total = len(data.category_ids) * 10  # 10 sellers per category
+        scan_id = uuid.uuid4().hex[:8]
+        active_scans[scan_id] = {
+            "scan_id": scan_id, "status": "running", "mode": "topsellers",
+            "results": [], "progress": 0, "total": total,
+            "total_found": 0, "done": False, "cancelled": False,
+        }
+        asyncio.create_task(_bg_topsellers(scan_id, data.category_ids))
+        log_activity("scan", "Top Sellers scan started",
+                     f"{len(data.category_ids)} categories, up to {total} sellers")
+        return {"scan_id": scan_id, "total": total, "mode": data.mode}
+
+    # Scout / Full — build keyword list
     keywords_list = []
     for cat_id in data.category_ids:
         if cat_id in CATEGORIES:
@@ -585,10 +658,6 @@ async def start_scan(data: ScanStartReq):
 
     if not keywords_list:
         raise HTTPException(400, "No keywords found for selected categories")
-
-    ebay = get_ebay()
-    if not ebay.is_configured():
-        raise HTTPException(400, "eBay API not configured — add keys in Settings")
 
     scan_id = uuid.uuid4().hex[:8]
     active_scans[scan_id] = {
@@ -721,3 +790,18 @@ async def auto_scan_legacy(max_categories: int = 5):
     except Exception as e:
         log.error(f"Auto scan error: {e}")
         raise HTTPException(500, str(e))
+
+
+# ── Static File Serving (Docker / Production) ─────────────────
+# When `npm run build` output is copied to backend/static/, serve the SPA
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists() and (_static_dir / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=_static_dir / "assets"), name="static-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """Serve the React SPA — all non-API routes get index.html."""
+        file = _static_dir / full_path
+        if file.is_file() and ".." not in full_path:
+            return FileResponse(file)
+        return FileResponse(_static_dir / "index.html")

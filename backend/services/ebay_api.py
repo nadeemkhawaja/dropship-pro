@@ -148,6 +148,80 @@ class eBayClient:
             "total": data.get("total", 0),
         }
 
+    async def search_category_best(self, ebay_category_id: str, limit: int = 200,
+                                   min_price: float = 5.0, max_price: float = 50.0) -> dict:
+        """
+        Search top BIN listings in an eBay category sorted by bestMatch.
+        bestMatch is weighted by purchase activity — proxy for best-selling products.
+        Returns up to 200 results (eBay hard limit per request).
+        """
+        headers = await self._app_headers()
+        params = {
+            "category_ids": ebay_category_id,
+            "filter": f"buyingOptions:{{FIXED_PRICE}},price:[{min_price}..{max_price}],priceCurrency:USD",
+            "sort":   "bestMatch",
+            "limit":  min(limit, 200),
+        }
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(f"{EBAY_PROD}/buy/browse/v1/item_summary/search",
+                            headers=headers, params=params)
+        if r.status_code != 200:
+            log.warning(f"search_category_best {ebay_category_id}: {r.status_code} {r.text[:200]}")
+            return {"items": [], "total": 0}
+        data  = r.json()
+        items = data.get("itemSummaries", [])
+        return {
+            "items": [{
+                "title":     i.get("title"),
+                "price":     float(i["price"]["value"]) if i.get("price") else None,
+                "image":     i.get("image", {}).get("imageUrl"),
+                "item_url":  i.get("itemWebUrl"),
+                "seller":    i.get("seller", {}).get("username"),
+                "condition": i.get("condition"),
+                "watchers":  i.get("watchCount", 0),
+                "sold_qty":  i.get("soldQuantity", 0),
+            } for i in items],
+            "total": data.get("total", 0),
+        }
+
+    async def search_by_seller(self, seller_username: str, limit: int = 60,
+                               ebay_category_id: str = None) -> dict:
+        """Get a seller's active BIN listings priced $5–$50.
+        Uses category_ids=0 (undocumented eBay wildcard) to avoid requiring q.
+        """
+        headers = await self._app_headers()
+        filter_str = (
+            f"sellers:{{{seller_username}}},"
+            "buyingOptions:{FIXED_PRICE},"
+            "price:[5..50],priceCurrency:USD"
+        )
+        params = {
+            "category_ids": ebay_category_id or "0",
+            "filter": filter_str,
+            "sort":   "bestMatch",
+            "limit":  limit,
+        }
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{EBAY_PROD}/buy/browse/v1/item_summary/search",
+                            headers=headers, params=params)
+        if r.status_code != 200:
+            log.warning(f"search_by_seller {seller_username}: {r.status_code} {r.text[:200]}")
+            return {"items": [], "total": 0}
+        data  = r.json()
+        items = data.get("itemSummaries", [])
+        return {
+            "items": [{
+                "title":     i.get("title"),
+                "price":     float(i["price"]["value"]) if i.get("price") else None,
+                "image":     i.get("image", {}).get("imageUrl"),
+                "item_url":  i.get("itemWebUrl"),
+                "seller":    i.get("seller", {}).get("username"),
+                "condition": i.get("condition"),
+                "watchers":  i.get("watchCount", 0),
+            } for i in items],
+            "total": data.get("total", 0),
+        }
+
     async def get_item(self, item_id: str) -> dict:
         """Get single eBay item details."""
         headers = await self._app_headers()
@@ -220,7 +294,7 @@ class eBayClient:
             r = await c.post(f"{EBAY_PROD}/sell/inventory/v1/offer/{offer_id}/publish",
                              headers=headers)
         data = r.json()
-        if r.status_code not in (200, 200):
+        if r.status_code not in (200, 201):
             log.error(f"publish_offer {offer_id}: {r.status_code} {data}")
             return None
         return data.get("listingId")
